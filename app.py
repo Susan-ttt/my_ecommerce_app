@@ -3,12 +3,11 @@ import requests
 import json
 import sys
 import os
-import matplotlib.pyplot as plt
-from wordcloud import WordCloud
 import pandas as pd
 from docx import Document
+import io
 
-# 强制编码设置
+# 强制 UTF-8 编码（修复云端编码问题）
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
 if sys.stdout.encoding != 'utf-8':
@@ -17,18 +16,24 @@ if sys.stderr.encoding != 'utf-8':
     sys.stderr.reconfigure(encoding='utf-8')
 
 # 配置
-DEEPSEEK_API_KEY = "你的真实密钥"
+DEEPSEEK_API_KEY = st.secrets["DEEPSEEK_API_KEY"]  # 从云端 Secret 读取
 URL = "https://api.deepseek.com/v1/chat/completions"
 
 st.set_page_config(page_title="电商评论分析看板", layout="wide")
 st.title("📊 电商竞对评论区洞察看板")
 
+# 初始化 session_state
+if "step" not in st.session_state:
+    st.session_state.step = "input"
+if "comment_text" not in st.session_state:
+    st.session_state.comment_text = ""
+if "analysis_result" not in st.session_state:
+    st.session_state.analysis_result = None
 
-# ========== 辅助函数 ==========
 def call_ai_analysis(comments_list):
     if not comments_list:
         return None
-    comments_text = "\n".join([f"{i + 1}. {c}" for i, c in enumerate(comments_list)])
+    comments_text = "\n".join([f"{i+1}. {c}" for i, c in enumerate(comments_list)])
     prompt = f"""你是一个电商运营专家。请分析以下用户评论，输出：
 1. 高频正面关键词（出现次数最多的3-5个词，每个词附带出现次数）
 2. 高频负面关键词（出现次数最多的3-5个词，每个词附带出现次数）
@@ -76,36 +81,10 @@ def call_ai_analysis(comments_list):
             st.error(f"API调用失败：{response.text}")
             return None
     except Exception as e:
-        st.error(f"请求异常：{e}")
+        st.error(f"请求异常：{str(e)}")
         return None
 
-
-def generate_wordcloud(keywords_dict, title):
-    if not keywords_dict:
-        return None
-    font_path = 'C:/Windows/Fonts/simhei.ttf'
-    if not os.path.exists(font_path):
-        font_path = 'C:/Windows/Fonts/msyh.ttc'
-    if not os.path.exists(font_path):
-        font_path = None
-    wc = WordCloud(width=800, height=400, background_color='white', font_path=font_path)
-    wc.generate_from_frequencies(keywords_dict)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(wc, interpolation='bilinear')
-    ax.axis('off')
-    ax.set_title(title, fontsize=16)
-    return fig
-
-
-# ========== 初始化 session_state ==========
-if "step" not in st.session_state:
-    st.session_state.step = "input"
-if "comment_text" not in st.session_state:
-    st.session_state.comment_text = ""
-if "analysis_result" not in st.session_state:
-    st.session_state.analysis_result = None
-
-# ========== 导航按钮 ==========
+# 导航按钮
 col_nav1, col_nav2, _ = st.columns([1, 1, 4])
 with col_nav1:
     if st.button("⬅️ 上一步（编辑输入）"):
@@ -113,7 +92,6 @@ with col_nav1:
         st.rerun()
 with col_nav2:
     if st.button("下一步 ➡️"):
-        # 直接使用 comment_text 中的内容
         lines = st.session_state.comment_text.strip().split('\n')
         comments = [line.strip() for line in lines if line.strip()]
         if len(comments) == 0:
@@ -144,52 +122,54 @@ with col_nav2:
                 else:
                     st.error("分析失败，请重试")
 
-# ========== 输入界面 ==========
+# 输入界面
 if st.session_state.step == "input":
     st.markdown("粘贴多条用户评论（每行一条），或上传文件（txt/csv/xlsx/docx），然后点击「下一步」进行分析。")
-
+    
     with st.sidebar:
         st.header("📂 上传文件")
         uploaded_file = st.file_uploader("支持 .txt, .csv, .xlsx, .docx", type=["txt", "csv", "xlsx", "docx"])
         if uploaded_file is not None:
             content = ""
             try:
-                if uploaded_file.name.endswith('.txt'):
-                    content = uploaded_file.read().decode("utf-8")
-                elif uploaded_file.name.endswith('.csv'):
-                    df = pd.read_csv(uploaded_file)
+                # 修复：正确读取文件名和内容，使用 utf-8
+                filename = uploaded_file.name
+                if filename.endswith('.txt'):
+                    content = uploaded_file.read().decode('utf-8')
+                elif filename.endswith('.csv'):
+                    df = pd.read_csv(uploaded_file, encoding='utf-8')
                     if df.shape[1] >= 1:
                         content = "\n".join(df.iloc[:, 0].astype(str).tolist())
-                elif uploaded_file.name.endswith('.xlsx'):
+                elif filename.endswith('.xlsx'):
                     df = pd.read_excel(uploaded_file, engine='openpyxl')
                     if df.shape[1] >= 1:
                         content = "\n".join(df.iloc[:, 0].astype(str).tolist())
-                elif uploaded_file.name.endswith('.docx'):
-                    doc = Document(uploaded_file)
+                elif filename.endswith('.docx'):
+                    # 使用 BytesIO 避免编码问题
+                    doc = Document(io.BytesIO(uploaded_file.read()))
                     content = "\n".join([para.text for para in doc.paragraphs if para.text.strip()])
                 if content:
                     st.session_state.comment_text = content
-                    st.success(f"已加载 {uploaded_file.name}，共 {len(content.splitlines())} 行")
+                    st.success(f"已加载 {filename}，共 {len(content.splitlines())} 行")
                     st.rerun()
                 else:
                     st.warning("文件内容为空或无法解析")
             except Exception as e:
-                st.error(f"读取文件失败：{e}")
-
+                st.error(f"读取文件失败：{str(e)}")
+    
     comment_text = st.text_area(
         "✏️ 评论内容（每条评论换行分隔）",
         value=st.session_state.comment_text,
         height=300,
         placeholder="例如：\n音质很好，但电池不耐用\n物流很快，包装破损\n客服态度好，回复及时"
     )
-    # 同步用户编辑的内容到 session_state
     st.session_state.comment_text = comment_text
-
+    
     if st.button("🗑️ 清空所有输入"):
         st.session_state.comment_text = ""
         st.rerun()
 
-# ========== 结果界面 ==========
+# 结果界面
 elif st.session_state.step == "result":
     if st.session_state.analysis_result is None:
         st.warning("没有分析结果，请先点击「下一步」进行分析。")
@@ -199,35 +179,28 @@ elif st.session_state.step == "result":
     else:
         res = st.session_state.analysis_result
         st.success(f"分析完成！共分析 {res['comments_count']} 条评论")
-
+        
         if st.button("📥 下载报告"):
             report = res.get("report_text", "")
             if report:
                 st.download_button("点击下载", data=report, file_name="评论分析报告.txt", mime="text/plain")
-
+        
         colA, colB = st.columns(2)
         with colA:
             st.subheader("👍 高频正面关键词")
             if res["positive"]:
                 pos_dict = {word: cnt for word, cnt in res["positive"]}
                 st.table({"关键词": list(pos_dict.keys()), "出现次数": list(pos_dict.values())})
-                fig_pos = generate_wordcloud(pos_dict, "正面关键词词云")
-                if fig_pos:
-                    st.pyplot(fig_pos)
             else:
                 st.info("未检测到正面关键词")
-
         with colB:
             st.subheader("👎 高频负面关键词")
             if res["negative"]:
                 neg_dict = {word: cnt for word, cnt in res["negative"]}
                 st.table({"关键词": list(neg_dict.keys()), "出现次数": list(neg_dict.values())})
-                fig_neg = generate_wordcloud(neg_dict, "负面关键词词云")
-                if fig_neg:
-                    st.pyplot(fig_neg)
             else:
                 st.info("未检测到负面关键词")
-
+        
         st.subheader("💡 运营优化建议")
         for i, sug in enumerate(res["suggestions"], 1):
             st.write(f"{i}. {sug}")
