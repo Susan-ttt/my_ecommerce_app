@@ -1,0 +1,9 @@
+streamlit
+requests
+matplotlib
+wordcloud
+pandas
+openpyxl
+python-docx
+numpy
+pillow
